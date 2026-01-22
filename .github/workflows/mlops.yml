@@ -1,0 +1,141 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/ml-service
+  MODEL_VERSION: "1.0.0"
+
+jobs:
+  train:
+    name: Train Model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run training pipeline
+        run: |
+          dvc init --no-scm || true
+          dvc repro || (python src/prepare.py && python src/train.py && python src/evaluate.py)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts
+          path: |
+            models/
+            metrics.json
+            mlruns/
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metrics
+          path: metrics.json
+
+  build-and-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    needs: train
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-artifacts
+          path: .
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.MODEL_VERSION }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: metrics
+          path: .
+
+      - name: Deploy info
+        run: |
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Version: ${{ env.MODEL_VERSION }}"
+          cat metrics.json | jq . || true
+
+      - name: Mock deploy
+        run: |
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "kubectl set image deployment/ml-service ml-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Deployment complete"
+
+      - name: Summary
+        run: |
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## Deployment Summary
+          | Property | Value |
+          |----------|-------|
+          | Image | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` |
+          | Tag | \`${{ github.sha }}\` |
+          | Model Version | \`${{ env.MODEL_VERSION }}\` |
+          EOF
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [train, build-and-push, deploy]
+    if: always()
+    
+    steps:
+      - name: Result
+        run: |
+          echo "Train: ${{ needs.train.result }}"
+          echo "Build: ${{ needs.build-and-push.result }}"
+          echo "Deploy: ${{ needs.deploy.result }}"

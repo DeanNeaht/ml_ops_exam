@@ -1,0 +1,12 @@
+project: iris_mlops
+registry: registry.db
+provider: local
+
+online_store:
+  type: sqlite
+  path: online_store.db
+
+offline_store:
+  type: file
+
+entity_key_serialization_version: 2

@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  ml-service:
+    build: .
+    container_name: ml-service
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_VERSION=1.0.0
+      - MODEL_PATH=models/model.pkl
+    volumes:
+      - ./models:/app/models:ro
+    networks:
+      - mlops-network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - mlops-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - mlops-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+networks:
+  mlops-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
